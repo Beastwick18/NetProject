@@ -9,10 +9,16 @@ IP = '127.0.0.1'
 BASE_PORT = 0
 INFINITY = 999
 CONFIG_FILE = 'test.config'
-TIMEOUT = 1
+TIMEOUT = .05
 
 NODES = 'ABCDEF'
 table = {}
+
+def encode_message(msg_type, id, data):
+    return pickle.dumps((msg_type, id, data))
+
+def decode_message(raw_data):
+    return pickle.loads(raw_data)
 
 def get_port(id):
     if id < 'A' or id > 'F':
@@ -110,9 +116,9 @@ def bellman_ford(table, source):
     
     return distance
 
-def update_table(data, addr):
-    sender = data[0]
-    new_table = data[1]
+def update_table(sender, data, addr):
+    # sender = data[0]
+    new_table = data
     
     updated = False
     for node, edges in new_table.items():
@@ -129,12 +135,12 @@ def update_table(data, addr):
             updated = True
     
     if updated:
-        print(f'Recieved table from IP:{addr} with ID:{sender}')
-        print(f'\nUpdated Table:')
+        print(f'\nRecieved table from IP:{addr} with ID:{sender}')
+        print(f'Updated Table:')
         print_table(table)
     else:
         pass
-        # print('No updates')
+    
     return updated
 
 def update_neighbors(sock):
@@ -144,8 +150,15 @@ def update_neighbors(sock):
             continue
         
         # Encode the id and table into byte format so it can be sent
-        data = pickle.dumps((ID, table))
+        data = encode_message('update', ID, table)
         sock.sendto(data, (IP, get_port(neighbor)))
+
+def convergence(table):
+    for a in NODES:
+        for b in NODES:
+            if table[a][b] != table[b][a]:
+                return False
+    return True
 
 def main():
     if len(sys.argv) <= 2:
@@ -169,26 +182,30 @@ def main():
     sock.settimeout(TIMEOUT)
     sock.bind((IP, PORT))
     
+    update_neighbors(sock)
+    
     try:
         print('Press `Ctrl + C` to exit\nListening...')
         
-        while True:
+        while not convergence(table):
             try:
                 raw_data, addr = sock.recvfrom(1024)
                 
                 # Parse the table, which has been sent in an encoded byte format
-                data = pickle.loads(raw_data)
+                msg_type, id, data = decode_message(raw_data)
                 
                 # Try to update the table with new values
-                updated = update_table(data, addr)
+                updated = update_table(id, data, addr)
                 
                 sleep(TIMEOUT)
                 
                 if updated:
                     update_neighbors(sock)
             except TimeoutError:
-                # On timeout, update neighbors with our routing table
                 update_neighbors(sock)
+        
+        print('\n-------------------------\nFinal:')
+        print_table(table)
     except KeyboardInterrupt:
         pass
     
