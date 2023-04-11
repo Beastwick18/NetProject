@@ -21,6 +21,16 @@ def get_port(id):
     
     return BASE_PORT + ord(id) - ord('A')
 
+def get_index(id):
+    if id < 'A' or id > 'F':
+        print('The given ID is not within the range of valid IDs')
+        return
+    
+    return ord(id) - ord('A')
+
+def get_id(index):
+    return chr(index + ord('A'))
+
 def load_config(id):
     # Initialize the table
     for node in NODES:
@@ -84,17 +94,17 @@ def bellman_ford(table, source):
     
     for _ in range(len(vertices)-1):
         for node, edges in table.items():
-            u = ord(node) - ord('A')
+            u = get_index(node)
             for edge, w in edges.items():
-                v = ord(edge) - ord('A')
+                v = get_index(edge)
                 if distance[u] + w < distance[v]:
                     distance[v] = distance[u] + w
                     predecessor[v] = u
     
     for node in vertices:
-        v = ord(node) - ord('A')
+        v = get_index(node)
         u = predecessor[v]
-        if u != None and distance[u] + table[chr(u + ord('A'))][node] < distance[v]:
+        if u != None and distance[u] + table[get_id(u)][node] < distance[v]:
             print('ruh roh, negative cycle')
             return None
     
@@ -111,7 +121,7 @@ def update_table(data, addr):
                 updated = True
                 table[node][edge] = cost
     
-    distance = bellman_ford(table, ord(ID) - ord('A'))
+    distance = bellman_ford(table, get_index(ID))
     for i, cost in enumerate(distance):
         v = NODES[i]
         if cost < table[ID][v]:
@@ -148,7 +158,7 @@ def main():
         ID = sys.argv[2]
         
         # Get base port (the port that the routers begin at, which is router 1)
-        BASE_PORT = PORT - ord(ID) + ord('A')
+        BASE_PORT = PORT - get_index(ID)
     except:
         print('Expected an integer')
         return
