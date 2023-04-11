@@ -1,14 +1,17 @@
+import pickle
+import re
 import sys
+import socket
 from threading import Thread
 from time import sleep
-import socket
-import re
-import pickle
 
+IP = '127.0.0.1'
 BASE_PORT = 0
 INFINITY = 999
+CONFIG_FILE = 'test.config'
+TIMEOUT = 1
 
-nodes = 'ABCDEF'
+NODES = 'ABCDEF'
 table = {}
 
 def get_port(id):
@@ -20,20 +23,20 @@ def get_port(id):
 
 def load_config(id):
     # Initialize the table
-    for node in nodes:
+    for node in NODES:
         table[node] = {}
     
     # Set all nodes to have an infinite cost to each neighbor node
-    for node in nodes:
-        for node2 in nodes:
+    for node in NODES:
+        for node2 in NODES:
             table[node][node2] = INFINITY
     
     # Change the cost to 0 when going from one node to itself
-    for node in nodes:
+    for node in NODES:
         table[node][node] = 0
     
     # Open the config file
-    with open('test.config') as config:
+    with open(CONFIG_FILE) as config:
         # Split the file into individual lines to be parsed
         lines = config.read().splitlines()
         
@@ -56,14 +59,83 @@ def load_config(id):
                         # Get the neighbor in question
                         adj = match.group(1)
                         # Get that neighbors cost
-                        cost = match.group(2)
+                        cost = int(match.group(2))
                         print(f'{curr} to {adj} costs {cost}')
                         # Update the value in the table
                         table[curr][adj] = cost
             else:
                 print(f'Line {i+1} is incorrectly formatted')
         
-        print(table)
+        print('\nTable:')
+        print_table(table)
+        print()
+
+def print_table(table):
+    for key, value in table.items():
+        print(str(key) + ' ' + str(value))
+
+# Source: https://en.wikipedia.org/wiki/Bellman%E2%80%93Ford_algorithm
+def bellman_ford(table, source):
+    vertices = NODES
+    distance = [INFINITY] * len(vertices)
+    predecessor = [None] * len(vertices)
+    
+    distance[source] = 0
+    
+    for _ in range(len(vertices)-1):
+        for node, edges in table.items():
+            u = ord(node) - ord('A')
+            for edge, w in edges.items():
+                v = ord(edge) - ord('A')
+                if distance[u] + w < distance[v]:
+                    distance[v] = distance[u] + w
+                    predecessor[v] = u
+    
+    for node in vertices:
+        v = ord(node) - ord('A')
+        u = predecessor[v]
+        if u != None and distance[u] + table[chr(u + ord('A'))][node] < distance[v]:
+            print('ruh roh, negative cycle')
+            return None
+    
+    return distance
+
+def update_table(data, addr):
+    sender = data[0]
+    new_table = data[1]
+    
+    updated = False
+    for node, edges in new_table.items():
+        for edge, cost in edges.items():
+            if cost < table[node][edge]:
+                updated = True
+                table[node][edge] = cost
+    
+    distance = bellman_ford(table, ord(ID) - ord('A'))
+    for i, cost in enumerate(distance):
+        v = NODES[i]
+        if cost < table[ID][v]:
+            table[ID][v] = cost
+            updated = True
+    
+    if updated:
+        print(f'Recieved table from IP:{addr} with ID:{sender}')
+        print(f'\nUpdated Table:')
+        print_table(table)
+    else:
+        pass
+        # print('No updates')
+    return updated
+
+def update_neighbors(sock):
+    for neighbor, cost in table[ID].items():
+        # Don't send to itself, and don't send to node that cannot be reached
+        if neighbor == ID or cost == INFINITY:
+            continue
+        
+        # Encode the id and table into byte format so it can be sent
+        data = pickle.dumps((ID, table))
+        sock.sendto(data, (IP, get_port(neighbor)))
 
 def main():
     if len(sys.argv) <= 2:
@@ -84,22 +156,29 @@ def main():
     load_config(ID)
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(1)
-    sock.bind(('127.0.0.1', PORT))
+    sock.settimeout(TIMEOUT)
+    sock.bind((IP, PORT))
     
     try:
         print('Press `Ctrl + C` to exit\nListening...')
         
         while True:
             try:
-                data, addr = sock.recvfrom(1024)
-                print(f'wow: {pickle.loads(data)}, {addr}')
+                raw_data, addr = sock.recvfrom(1024)
+                
+                # Parse the table, which has been sent in an encoded byte format
+                data = pickle.loads(raw_data)
+                
+                # Try to update the table with new values
+                updated = update_table(data, addr)
+                
+                sleep(TIMEOUT)
+                
+                if updated:
+                    update_neighbors(sock)
             except TimeoutError:
                 # On timeout, update neighbors with our routing table
-                for x, v in table[ID].items():
-                    if x != ID and v != INFINITY:
-                        data = pickle.dumps(table)
-                        sock.sendto(data, ('127.0.0.1', get_port(x)))
+                update_neighbors(sock)
     except KeyboardInterrupt:
         pass
     
