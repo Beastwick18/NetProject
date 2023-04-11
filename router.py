@@ -1,68 +1,226 @@
-# Steven Culwell
-# 1001783662
-
+import pickle
 import re
 import sys
-
-# Import socket module
 import socket
-
-graph = ()
-
-# Import thread module
 from threading import Thread
+from time import sleep
 
-def multi_thread(connectionSocket):
-    try:
-        # Extract the path of the requested object from the message
-        message = connectionSocket.recv(1024).decode('utf-8')
-        print(message)
-        
-        connectionSocket.send('test'.encode('utf-8'))
-    except Exception as e:
-        print(f'{type(e).__name__}: {str(e)}')
+IP = '127.0.0.1'
+BASE_PORT = 0
+INFINITY = 999
+CONFIG_FILE = 'topology.config'
+TIMEOUT = .05
 
-    # Close the socket in case of some issues 
-    connectionSocket.close()
+NODES = 'ABCDEF'
+table = {}
+edges = {}
 
-def load_config():
-    config = open('test.config')
+# Encode a message using pickle
+def encode_message(msg_type, id, data):
+    return pickle.dumps((msg_type, id, data))
+
+# Decode a byte encoded message using pickle
+def decode_message(raw_data):
+    return pickle.loads(raw_data)
+
+# Given an id, map it to the appropriate port
+def get_port(id):
+    return BASE_PORT + ord(id) - ord('A')
+
+# Given an ID in the range A-F, map it to 0-5
+def get_index(id):
+    return ord(id) - ord('A')
+
+# Given an index from 0-5, map it to IDs A-F
+def get_id(index):
+    return chr(index + ord('A'))
+
+# Load the config file from disk, but only pick the line defining the node with id 'id'
+def load_config(id):
+    # Initialize the table
+    for node in NODES:
+        table[node] = {}
     
+    # Set all nodes to have an infinite cost to each neighbor node
+    for node in NODES:
+        for node2 in NODES:
+            table[node][node2] = INFINITY
+    
+    # Change the cost to 0 when going from one node to itself
+    for node in NODES:
+        table[node][node] = 0
+    
+    # Open the config file
+    with open(CONFIG_FILE) as config:
+        # Split the file into individual lines to be parsed
+        lines = config.read().splitlines()
+        
+        for i, line in enumerate(lines):
+            # Check if line is correctly formatted, while also getting the node this line is defining,
+            # as well as the data within the `{}` after it. Will fail if the line is improperly formatted.
+            if match := re.match(r'([A-F])={([A-F]:[0-9]+(,[A-F]:[0-9]+)*)}', line):
+                # Get the node that this line is defining
+                curr = match.group(1)
+                
+                # Only consider the line defining this routers node
+                if curr != ID:
+                    continue
+                
+                # Get all the neighbors of this node, which are comma delimeted
+                neighbors = match.group(2).split(',')
+                for n in neighbors:
+                    # Check if the neighbors data is properly formatted, i.e. NEIGHBOR:COST
+                    if match := re.match(r'([A-F]):([0-9]+)', n):
+                        # Get the neighbor in question
+                        adj = match.group(1)
+                        # Get that neighbors cost
+                        cost = int(match.group(2))
+                        print(f'{curr} to {adj} costs {cost}')
+                        # Update the value in the table
+                        table[curr][adj] = cost
+                        edges[adj] = True
+            else:
+                print(f'Line {i+1} is incorrectly formatted')
+        
+        print('\nTable:')
+        print_table(table)
+        print()
+
+def print_table(table):
+    for key, value in table.items():
+        print(str(key) + ' ' + str(value))
+
+# Source: https://en.wikipedia.org/wiki/Bellman%E2%80%93Ford_algorithm
+def bellman_ford(table, source):
+    vertices = NODES
+    distance = [INFINITY] * len(vertices)
+    predecessor = [None] * len(vertices)
+    
+    distance[source] = 0
+    
+    for _ in range(len(vertices)-1):
+        for node, edges in table.items():
+            u = get_index(node)
+            for edge, w in edges.items():
+                v = get_index(edge)
+                if distance[u] + w < distance[v]:
+                    distance[v] = distance[u] + w
+                    predecessor[v] = u
+    
+    for node in vertices:
+        v = get_index(node)
+        u = predecessor[v]
+        if u != None and distance[u] + table[get_id(u)][node] < distance[v]:
+            print('There is a negative cycle')
+            return None
+    
+    return distance
+
+def update_table(sender, data, addr):
+    # sender = data[0]
+    new_table = data
+    
+    updated = False
+    for node, edges in new_table.items():
+        for edge, cost in edges.items():
+            if cost < table[node][edge]:
+                updated = True
+                table[node][edge] = cost
+    
+    distance = bellman_ford(table, get_index(ID))
+    for i, cost in enumerate(distance):
+        v = NODES[i]
+        if cost < table[ID][v]:
+            table[ID][v] = cost
+            updated = True
+    
+    if updated:
+        print(f'\nRecieved table from IP:{addr} with ID:{sender}')
+        print(f'Updated Table:')
+        print_table(table)
+    else:
+        pass
+    
+    return updated
+
+def update_neighbors(sock):
+    for neighbor, cost in table[ID].items():
+        # Skip if we do not share an edge with this node
+        if not neighbor in edges:
+            continue
+        
+        # Encode the id and table into byte format so it can be sent
+        data = encode_message('update', ID, table)
+        sock.sendto(data, (IP, get_port(neighbor)))
+
+def convergence(table):
+    for a in NODES:
+        for b in NODES:
+            if table[a][b] != table[b][a]:
+                return False
+    return True
 
 def main():
-    load_config()
+    if len(sys.argv) <= 2:
+        print('Expected 2 arguments:\nrouter.py <PORT> <ID>')
+        return
     
-    # Create a UDP server socket
-    serverSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-
-    # Assign a port number
-    if len(sys.argv) <= 1:
-        serverPort = 8080
-    else:
-        serverPort = int(sys.argv[1])
-
-    # Bind the socket to server address and server port
-    serverSocket.bind(('', serverPort)) # default to localhost
-
-    # Listen to at most 5 connection at a time
-    serverSocket.listen(5)
-
-    # Server should be up and running and listening to the incoming connections
-    print('Ready to serve')
-    while True:
-        '''This part is for multi threading'''
-        conn, addr = serverSocket.accept()
-        print(f'Connected to: {str(addr)}')
-        print('Peer name:', conn.getpeername())
-        print('Socket family:', conn.family)
-        print('Socket protocol:', conn.proto)
-        print('Timeout:', conn.gettimeout())
-        thread = Thread(target=multi_thread, args=(conn,))
-        '''Start the new thread'''
-        thread.start()
+    # Read in command line arguments
+    global BASE_PORT, PORT, ID
+    try:
+        PORT = int(sys.argv[1])
+        ID = sys.argv[2]
+        
+        # Get base port (the port that the routers begin at, which is router 1)
+        BASE_PORT = PORT - get_index(ID)
+    except:
+        print('Expected an integer')
+        return
     
-    # Close server socket
-    serverSocket.close()
+    # Load the config for this node
+    load_config(ID)
+    
+    # Open a UDP socket on the given IP and port
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(TIMEOUT)
+    sock.bind((IP, PORT))
+    
+    # Update neighbors after loading config
+    update_neighbors(sock)
+    
+    try:
+        print('Press `Ctrl + C` to exit\nListening...')
+        
+        update_count = 0
+        # Continue to run while we have not converged
+        while not convergence(table):
+            try:
+                # Try to receive a message
+                raw_data, addr = sock.recvfrom(1024)
+                
+                # Parse the table, which has been sent in an encoded byte format
+                msg_type, id, data = decode_message(raw_data)
+                
+                # Try to update the table with new values
+                updated = update_table(id, data, addr)
+                
+                sleep(TIMEOUT)
+                
+                # If the table was updated, send that updated table to our neighbors
+                if updated:
+                    update_count += 1
+                    update_neighbors(sock)
+            except TimeoutError:
+                # Periodically update our neigbors
+                update_neighbors(sock)
+        
+        print('\n-------------------------\nFinal:')
+        print_table(table)
+    except KeyboardInterrupt:
+        pass
+    
+    print(update_count)
+    sock.close()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
