@@ -1,9 +1,7 @@
-import pickle
-import re
-import sys
-import socket
+import pickle, re, sys, socket
 from threading import Thread
 from time import sleep
+import datetime
 
 IP = '127.0.0.1'
 BASE_PORT = 0
@@ -163,6 +161,81 @@ def convergence(table):
                 return False
     return True
 
+def router_simulation(sock):
+    print('Press `Ctrl + C` to exit\nListening...')
+    
+    update_count = 0
+    # Continue to run while we have not converged
+    while not convergence(table):
+        try:
+            # Try to receive a message
+            raw_data, addr = sock.recvfrom(1024)
+            
+            # Parse the table, which has been sent in an encoded byte format
+            msg_type, id, data = decode_message(raw_data)
+            
+            # If we've recieved an update to the table, handle it
+            if msg_type == 'update':
+                # Try to update the table with new values
+                updated = update_table(id, data, addr)
+                
+                # If the table was updated, send that updated table to our neighbors
+                if updated:
+                    update_count += 1
+                    update_neighbors(sock)
+            
+            sleep(TIMEOUT)
+        except TimeoutError:
+            # Periodically update our neigbors
+            update_neighbors(sock)
+    return update_count
+
+def test2(sock):
+    print('\n-------------------------\nTest 2:')
+    table['B']['D'] = INFINITY
+    table['D']['B'] = INFINITY
+    router_simulation(sock)
+    print_table(table)
+
+def test1(sock, update_count):
+    # Broadcast only for router A for now...
+    if ID == 'A':
+        print('\n-------------------------\nTest 1:')
+        msg = [ f'{ID}, {IP}, {PORT}', ('1001783662', 'Sameer ID'), datetime.datetime.now(), update_count, 1000 ]
+        msg[4] = sys.getsizeof(msg)
+        data = encode_message('broadcast', 'A', msg)
+        
+        sleep(1)
+        
+        for neighbor, _cost in table[ID].items():
+            # Skip if we do not share an edge with this node
+            if not neighbor in edges:
+                continue
+            
+            sock.sendto(data, (IP, get_port(neighbor)))
+    else:
+        try:
+            print('\n-------------------------\nTest 1:')
+            while True:
+                sock.settimeout(5)
+                raw_data, _addr = sock.recvfrom(1024)
+                msg_type, id, data = decode_message(raw_data)
+                if msg_type != 'broadcast':
+                    continue
+                encoded_data = encode_message(msg_type, ID, data)
+                print(f'Recieved broadcast from {id}')
+                print(data[0], data[1], data[2], data[3], data[4], sep='\n')
+                
+                for neighbor, _cost in table[ID].items():
+                    # Skip if we do not share an edge with this node
+                    if not neighbor in edges:
+                        continue
+                    
+                    sock.sendto(encoded_data, (IP, get_port(neighbor)))
+                break
+        except TimeoutError:
+            print('No broadcast recieved')
+    
 def main():
     if len(sys.argv) <= 2:
         print('Expected 2 arguments:\nrouter.py <PORT> <ID>')
@@ -191,36 +264,14 @@ def main():
     # Update neighbors after loading config
     update_neighbors(sock)
     
+    update_count = 0
     try:
-        print('Press `Ctrl + C` to exit\nListening...')
+        # update_count = 0
+        update_count = router_simulation(sock)
         
-        update_count = 0
-        # Continue to run while we have not converged
-        while not convergence(table):
-            try:
-                # Try to receive a message
-                raw_data, addr = sock.recvfrom(1024)
-                
-                # Parse the table, which has been sent in an encoded byte format
-                msg_type, id, data = decode_message(raw_data)
-                
-                # If we've recieved an update to the table, handle it
-                if msg_type == 'update':
-                    # Try to update the table with new values
-                    updated = update_table(id, data, addr)
-                    
-                    # If the table was updated, send that updated table to our neighbors
-                    if updated:
-                        update_count += 1
-                        update_neighbors(sock)
-                
-                sleep(TIMEOUT)
-            except TimeoutError:
-                # Periodically update our neigbors
-                update_neighbors(sock)
-        
-        print('\n-------------------------\nFinal:')
-        print_table(table)
+        test1(sock, update_count)
+
+        test2(sock)
     except KeyboardInterrupt:
         pass
     
