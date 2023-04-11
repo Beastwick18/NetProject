@@ -86,6 +86,7 @@ def load_config(id):
         print_table(table)
         print()
 
+# Print out a formatted table
 def print_table(table):
     for key, value in table.items():
         print(str(key) + ' ' + str(value))
@@ -116,8 +117,8 @@ def bellman_ford(table, source):
     
     return distance
 
+# Given some data sent from an `sender`, update the table with new values present in `data`
 def update_table(sender, data, addr):
-    # sender = data[0]
     new_table = data
     
     updated = False
@@ -143,8 +144,9 @@ def update_table(sender, data, addr):
     
     return updated
 
+# Send an update each node that shares an edge with this node
 def update_neighbors(sock):
-    for neighbor, cost in table[ID].items():
+    for neighbor, _cost in table[ID].items():
         # Skip if we do not share an edge with this node
         if not neighbor in edges:
             continue
@@ -153,6 +155,7 @@ def update_neighbors(sock):
         data = encode_message('update', ID, table)
         sock.sendto(data, (IP, get_port(neighbor)))
 
+# Check for convergence, meaning that the adjacency matrix is symmetrical along the diagonal axis
 def convergence(table):
     for a in NODES:
         for b in NODES:
@@ -201,15 +204,17 @@ def main():
                 # Parse the table, which has been sent in an encoded byte format
                 msg_type, id, data = decode_message(raw_data)
                 
-                # Try to update the table with new values
-                updated = update_table(id, data, addr)
+                # If we've recieved an update to the table, handle it
+                if msg_type == 'update':
+                    # Try to update the table with new values
+                    updated = update_table(id, data, addr)
+                    
+                    # If the table was updated, send that updated table to our neighbors
+                    if updated:
+                        update_count += 1
+                        update_neighbors(sock)
                 
                 sleep(TIMEOUT)
-                
-                # If the table was updated, send that updated table to our neighbors
-                if updated:
-                    update_count += 1
-                    update_neighbors(sock)
             except TimeoutError:
                 # Periodically update our neigbors
                 update_neighbors(sock)
@@ -219,7 +224,7 @@ def main():
     except KeyboardInterrupt:
         pass
     
-    print(update_count)
+    print('\nUpdates:', update_count)
     sock.close()
 
 if __name__ == "__main__":
