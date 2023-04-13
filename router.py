@@ -157,7 +157,7 @@ def update_neighbors(sock):
 def convergence(table):
     for a in NODES:
         for b in NODES:
-            if table[a][b] != table[b][a]:
+            if table[a][b] != table[b][a] or table[a][b] == INFINITY or table[b][a] == INFINITY:
                 return False
     return True
 
@@ -189,13 +189,6 @@ def router_simulation(sock):
             # Periodically update our neigbors
             update_neighbors(sock)
     return update_count
-
-def test2(sock):
-    print('\n-------------------------\nTest 2:')
-    table['B']['D'] = INFINITY
-    table['D']['B'] = INFINITY
-    router_simulation(sock)
-    print_table(table)
 
 def test1(sock, update_count):
     # Broadcast only for router A for now...
@@ -235,7 +228,61 @@ def test1(sock, update_count):
                 break
         except TimeoutError:
             print('No broadcast recieved')
+
+# def broadcast_and_wait(sock, msg):
+#     known_broadcasts = [msg]
+#     sock.settimeout(1)
+#     while True:
+#         try:
+#             for e in edges:
+#                 encoded_data = encode_message('broadcast', ID, msg)
+#                 sock.sendto(encoded_data, (IP, get_port(e)))
+            
+#             raw_data, _addr = sock.recvfrom(1024)
+#             msg_type, _id, recv = decode_message(raw_data)
+#             if msg_type == 'broadcast':
+#                 if recv in known_broadcasts:
+#                     break
+            
+#         except TimeoutError:
+#             pass
+
+# def test2(sock):
+#     if ID == 'B':
+#         del edges['D']
+#         load_config(ID)
+#         msg = ('link_broken', 'B', 'D')
+#         broadcast_and_wait(sock, msg)
+#     if ID == 'D':
+#         del edges['B']
+#         load_config(ID)
+#         msg = ('link_broken', 'B', 'D')
+#         broadcast_and_wait(sock, msg)
     
+#     router_simulation(sock, True)
+
+def test2(sock):
+    print('\n-------------------------\nTest 2:')
+    load_config(ID)
+    if ID == 'A':
+        del edges['B']
+        table['A']['B'] = INFINITY
+    elif ID == 'B':
+        del edges['A']
+        table['B']['A'] = INFINITY
+    
+    # Clear any messages from previous simulations
+    sock.settimeout(.05)
+    while True:
+        try:
+            sock.recvfrom(1024)
+        except TimeoutError:
+            break
+    
+    sleep(5)
+    
+    router_simulation(sock)
+
 def main():
     if len(sys.argv) <= 2:
         print('Expected 2 arguments:\nrouter.py <PORT> <ID>')
