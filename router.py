@@ -21,6 +21,16 @@ def encode_message(msg_type, id, data):
 def decode_message(raw_data):
     return pickle.loads(raw_data)
 
+def send_message(sock, destination, msg_type, data):
+    encoded_data = encode_message(msg_type, ID, data)
+    sock.sendto(encoded_data, (IP, get_port(destination)))
+
+def recieve_message(sock):
+    raw_data, _addr = sock.recvfrom(1024)
+    
+    # Parse the table, which has been sent in an encoded byte format
+    return decode_message(raw_data)
+
 # Given an id, map it to the appropriate port
 def get_port(id):
     return BASE_PORT + ord(id) - ord('A')
@@ -116,13 +126,14 @@ def bellman_ford(table, source):
     return distance
 
 # Given some data sent from an `sender`, update the table with new values present in `data`
-def update_table(sender, data, addr):
+def update_table(sender, data):
     new_table = data
     
     updated = False
     for node, edges in new_table.items():
         for edge, cost in edges.items():
             if cost < table[node][edge]:
+                print(f'Updated: Source={sender}, Current={cost}, Previous={table[node][edge]}')
                 updated = True
                 table[node][edge] = cost
     
@@ -130,25 +141,20 @@ def update_table(sender, data, addr):
     for i, cost in enumerate(distance):
         v = NODES[i]
         if cost < table[ID][v]:
+            print(f'Updated: Source={sender}, Current={table[ID][v]}, Previous={cost}')
             table[ID][v] = cost
             updated = True
     
     # if updated:
-    #     print(f'\nRecieved table from IP:{addr} with ID:{sender}')
-    #     print(f'Updated Table:')
-    #     print_table(table)
-    # else:
-    #     pass
-    
+        # print_table(table)
     return updated
 
 # Send an update each node that shares an edge with this node
 def update_neighbors(sock):
     # Go through each of the nodes that share an edge with this node
     for neighbor in edges:
-        # Encode the id and table into byte format so it can be sent
-        data = encode_message('update', ID, table)
-        sock.sendto(data, (IP, get_port(neighbor)))
+        # Send an updated table to this neighbor
+        send_message(sock, neighbor, 'update', table)
 
 # Check for convergence, meaning that the adjacency matrix is symmetrical along the diagonal axis
 def convergence(table):
@@ -173,17 +179,14 @@ def router_simulation(sock, wait_for_broadcast = False, initial_broadcast = None
     while wait_for_broadcast or not convergence(table):
         try:
             # Try to receive a message
-            raw_data, addr = sock.recvfrom(1024)
-            
-            # Parse the table, which has been sent in an encoded byte format
-            msg_type, id, data = decode_message(raw_data)
+            msg_type, id, data = recieve_message(sock)
             
             # First check if we are meant to wait for acknowledgement of previous broadcasts
             if msg_type == 'ack':
                 if data in broadcast_msgs and id in broadcast_msgs[data]:
                     # Remove them from the pending acknowledgements
                     broadcast_msgs[data].remove(id)
-                    # print(f'Ack from {id}')
+                    print(f'Ack from {id}')
                     
                     # If we require no more acknowledgements, remove this broadcast from the list
                     if not broadcast_msgs[data]:
@@ -193,16 +196,20 @@ def router_simulation(sock, wait_for_broadcast = False, initial_broadcast = None
                         broadcast_index = 0
             elif msg_type == 'link_broken':
                 if data in broadcast_msgs:
-                    data = encode_message('ack', ID, data)
-                    sock.sendto(data, (IP, get_port(id)))
+                    send_message(sock, id, 'ack', data)
                 elif data not in old_broadcasts:
                     # Recieved new broadcast
                     wait_for_broadcast = False
                     print(f'New broadcast from {id}')
                     broadcast_msgs[data] = [edge for edge in edges]
                     broadcast_msgs[data].remove(id)
-                    raw_data = encode_message('ack', ID, data)
-                    sock.sendto(raw_data, (IP, get_port(id)))
+                    send_message(sock, id, 'ack', data)
+                    if not broadcast_msgs[data]:
+                        print(f'{data} successfully fully broadcasted')
+                        del broadcast_msgs[data]
+                        old_broadcasts.append(data)
+                        broadcast_index = 0
+                        
                     
                     print(f'A link was broken from {data[0]} to {data[1]}, reset table')
                     
@@ -211,40 +218,31 @@ def router_simulation(sock, wait_for_broadcast = False, initial_broadcast = None
                         load_config(ID)
                 else:
                     # Already seen this broadcast, send acknowledgement
-                    # print(f'Reack to {id}')
-                    data = encode_message('ack', ID, data)
-                    sock.sendto(data, (IP, get_port(id)))
+                    print(f'Reack to {id}')
+                    send_message(sock, id, 'ack', data)
                 
             # If we've recieved an update to the table, handle it
             elif not broadcast_msgs and msg_type == 'update':
                 # Try to update the table with new values
-                updated = update_table(id, data, addr)
+                updated = update_table(id, data)
                 
                 # If the table was updated, send that updated table to our neighbors
                 if updated:
                     update_count += 1
                     update_neighbors(sock)
+            # If we still have broadcasts waiting on acknowledgements, timeout and resend them
             elif broadcast_msgs:
                 # Rebroadcast
-                for neighbor in edges:
-                    msg = list(broadcast_msgs.items())[broadcast_index][0]
-                    if neighbor in broadcast_msgs[msg]:
-                        # print(f'Rebroadcast {broadcast_index} to {neighbor}: {("link_broken", ID, msg)}')
-                        data = encode_message('link_broken', ID, list(broadcast_msgs.items())[broadcast_index][0])
-                        sock.sendto(data, (IP, get_port(neighbor)))
+                raise TimeoutError
             sleep(TIMEOUT)
         except TimeoutError:
             if broadcast_msgs:
-                for neighbor in edges:
-                    msg = list(broadcast_msgs.items())[broadcast_index][0]
-                    if neighbor in broadcast_msgs[msg]:
-                        # print(f'Rebroadcast {broadcast_index} to {neighbor}: {("link_broken", ID, msg)}')
-                        data = encode_message('link_broken', ID, list(broadcast_msgs.items())[broadcast_index][0])
-                        sock.sendto(data, (IP, get_port(neighbor)))
-                    
-                broadcast_index += 1
-                if broadcast_index >= len(broadcast_msgs):
-                    broadcast_index = 0
+                msg = list(broadcast_msgs.items())[broadcast_index][0]
+                for neighbor in broadcast_msgs[msg]:
+                    print(f'Rebroadcast {broadcast_index} to {neighbor}: {("link_broken", ID, msg)}')
+                    send_message(sock, neighbor, 'link_broken', msg)
+                
+                broadcast_index = (broadcast_index + 1) % len(broadcast_msgs)
             else:
                 # Periodically update our neigbors
                 update_neighbors(sock)
@@ -253,65 +251,87 @@ def router_simulation(sock, wait_for_broadcast = False, initial_broadcast = None
 def test1(sock, update_count):
     # Broadcast only for router A for now...
     if ID == 'A':
-        sock.settimeout(1)
+        sock.settimeout(TIMEOUT)
         print('\n-------------------------\nTest 1:')
         msg = [ f'{ID}, {IP}, {PORT}', ('1001783662', 'Sameer ID'), datetime.datetime.now(), update_count, 1000 ]
         msg[4] = sys.getsizeof(msg)
-        data = encode_message('broadcast', 'A', msg)
-        while True:
-            for neighbor, _cost in table[ID].items():
-                # Skip if we do not share an edge with this node
-                if not neighbor in edges:
-                    continue
-                
-                sock.sendto(data, (IP, get_port(neighbor)))
-            
-            raw_data, _addr = sock.recvfrom(1024)
-            msg_type, id, msg2 = decode_message(raw_data)
-            if msg_type == 'broadcast' and msg2 == msg:
-                break
+        pending_acks = [edge for edge in edges]
+        for neighbor in pending_acks:
+            send_message(sock, neighbor, 'broadcast', msg)
+        while pending_acks:
+            try:
+                msg_type, id, msg2 = recieve_message(sock)
+                if msg_type == 'broadcast' and msg2 == msg:
+                    if id in pending_acks:
+                        pending_acks.remove(id)
+                    else:
+                        send_message(sock, id, 'broadcast', msg)
+            except TimeoutError:
+                for neighbor in pending_acks:
+                    send_message(sock, neighbor, 'broadcast', msg)
     else:
         print('\n-------------------------\nTest 1:')
-        sock.settimeout(None)
+        sock.settimeout(TIMEOUT)
+        pending_acks = [edge for edge in edges]
+        recv_from = ''
+        
+        msg = None
         while True:
-            raw_data, _addr = sock.recvfrom(1024)
-            msg_type, id, data = decode_message(raw_data)
-            if msg_type != 'broadcast':
-                continue
-            encoded_data = encode_message(msg_type, ID, data)
-            print(f'Recieved broadcast from {id}')
-            print(f'Broadcast info: {data[0]}')
-            print(f'IDs: {data[1]}')
-            print(f'UTC Time: {data[2]}')
-            print(f'Updates: {data[3]}')
-            print(f'Bytes: {data[4]}')
-            
-            for neighbor, _cost in table[ID].items():
-                # Skip if we do not share an edge with this node
-                if not neighbor in edges:
+            try:
+                msg_type, id, data = recieve_message(sock)
+                recv_from = id
+                if msg_type != 'broadcast':
                     continue
+                print(f'Recieved broadcast from {id}')
+                print(f'Broadcast info: {data[0]}')
+                print(f'IDs: {data[1]}')
+                print(f'UTC Time: {data[2]}')
+                print(f'Updates: {data[3]}')
+                print(f'Bytes: {data[4]}')
+                msg = data
                 
-                sock.sendto(encoded_data, (IP, get_port(neighbor)))
-            break
+                break
+            except TimeoutError:
+                pass
+        
+        for neighbor in pending_acks:
+            send_message(sock, neighbor, 'broadcast', msg)
+        pending_acks.remove(recv_from)
+        while pending_acks:
+            try:
+                print(f'Waiting on {pending_acks}')
+                msg_type, id, msg2 = recieve_message(sock)
+                if msg_type == 'broadcast' and msg2 == msg:
+                    if id in pending_acks:
+                        pending_acks.remove(id)
+                    else:
+                        send_message(sock, id, 'broadcast', msg)
+            except TimeoutError:
+                for neighbor in pending_acks:
+                    send_message(sock, neighbor, 'broadcast', msg)
+    print('\ndone\n')
+    sleep(4)
 
 def test2(sock):
     print('\n-------------------------\nTest 2:')
     
+    print_table(table)
     
-    # Clear any messages from previous simulations
-    
-    if ID == 'A':
+    sock.settimeout(TIMEOUT)
+    if ID == 'B':
+        load_config(ID)
+        del edges['D']
+        table['B']['D'] = INFINITY
+        router_simulation(sock, False, ('B', 'D'))
+    elif ID == 'D':
         load_config(ID)
         del edges['B']
-        table['A']['B'] = INFINITY
-        router_simulation(sock, False, ('A', 'B'))
-    elif ID == 'B':
-        load_config(ID)
-        del edges['A']
-        table['B']['A'] = INFINITY
-        router_simulation(sock, False, ('A', 'B'))
+        table['D']['B'] = INFINITY
+        router_simulation(sock, False, ('D', 'B'))
     else:
         router_simulation(sock, True)
+    
+    print_table(table)
 
 def main():
     if len(sys.argv) <= 2:
@@ -330,13 +350,13 @@ def main():
         print('Expected an integer')
         return
     
-    # Load the config for this node
-    load_config(ID)
-    
     # Open a UDP socket on the given IP and port
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(TIMEOUT)
     sock.bind((IP, PORT))
+    
+    # Load the config for this node
+    load_config(ID)
     
     # Update neighbors after loading config
     update_neighbors(sock)
@@ -344,7 +364,9 @@ def main():
     update_count = 0
     try:
         # update_count = 0
+        print_table(table)
         update_count = router_simulation(sock)
+        print_table(table)
         
         test1(sock, update_count)
 
@@ -352,7 +374,7 @@ def main():
     except KeyboardInterrupt:
         pass
     
-    print('\nUpdates:', update_count)
+    # print('\nUpdates:', update_count)
     sock.close()
 
 if __name__ == "__main__":
