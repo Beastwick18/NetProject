@@ -69,7 +69,7 @@ def load_config(id):
         for i, line in enumerate(lines):
             # Check if line is correctly formatted, while also getting the node this line is defining,
             # as well as the data within the `{}` after it. Will fail if the line is improperly formatted.
-            if match := re.match(r'([A-F])={([A-F]:[0-9]+(,[A-F]:[0-9]+)*)}', line):
+            if match := re.match(r'([A-Z])={([A-Z]:[0-9]+(,[A-Z]:[0-9]+)*)}', line):
                 # Get the node that this line is defining
                 curr = match.group(1)
                 
@@ -81,7 +81,7 @@ def load_config(id):
                 neighbors = match.group(2).split(',')
                 for n in neighbors:
                     # Check if the neighbors data is properly formatted, i.e. NEIGHBOR:COST
-                    if match := re.match(r'([A-F]):([0-9]+)', n):
+                    if match := re.match(r'([A-Z]):([0-9]+)', n):
                         # Get the neighbor in question
                         adj = match.group(1)
                         # Get that neighbors cost
@@ -246,7 +246,7 @@ def test1(sock, update_count):
     if ID == 'A':
         # Create the broadcast message
         msg = [ 'message', f'{ID}, {IP}, {PORT}', ('1001783662', 'Sameer ID'), datetime.datetime.now(), update_count, 1000 ]
-        msg[4] = sys.getsizeof(msg)
+        msg[5] = sys.getsizeof(msg)
         print(f'Sending broadcast:')
         print(f'Broadcast info: {msg[1]}')
         print(f'IDs: {msg[2]}')
