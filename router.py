@@ -21,14 +21,17 @@ def encode_message(msg_type, id, data):
 def decode_message(raw_data):
     return pickle.loads(raw_data)
 
+# Encode and send a message on socket `sock`, to `destination`, with messsage
+# type `msg_type`, containing `data`
 def send_message(sock, destination, msg_type, data):
     encoded_data = encode_message(msg_type, ID, data)
     sock.sendto(encoded_data, (IP, get_port(destination)))
 
+# Recieve some message on socket `sock` and decode it
 def recieve_message(sock):
     raw_data, _addr = sock.recvfrom(1024)
     
-    # Parse the table, which has been sent in an encoded byte format
+    # Parse the message, which has been sent in an encoded byte format
     return decode_message(raw_data)
 
 # Given an id, map it to the appropriate port
@@ -83,21 +86,16 @@ def load_config(id):
                         adj = match.group(1)
                         # Get that neighbors cost
                         cost = int(match.group(2))
-                        # print(f'{curr} to {adj} costs {cost}')
                         # Update the value in the table
                         table[curr][adj] = cost
                         edges[adj] = True
             else:
                 print(f'Line {i+1} is incorrectly formatted')
-        
-        # print('\nTable:')
-        # print_table(table)
-        print()
 
 # Print out a formatted table
 def print_table(table):
     for key, value in table.items():
-        print(str(key) + ' ' + str(value))
+        print(f'{key} {value}')
 
 # Source: https://en.wikipedia.org/wiki/Bellman%E2%80%93Ford_algorithm
 def bellman_ford(table, source):
@@ -156,92 +154,29 @@ def update_neighbors(sock):
         send_message(sock, neighbor, 'update', table)
 
 # Check for convergence, meaning that the adjacency matrix is symmetrical along the diagonal axis
+# and there are no nodes marked as infinity
 def convergence(table):
     for a in NODES:
         for b in NODES:
-            if table[a][b] != table[b][a] or table[a][b] == INFINITY or table[b][a] == INFINITY:
+            if table[a][b] != table[b][a] or table[a][b] == INFINITY:
                 return False
     return True
 
 # Perform a router simulation.
-# wait_for_broadcast indicates if we should wait for at least one broadcast to be recieved before
-# considering whether or not convergence has been achieved. This is used for when we are expecting
-# a link break to occur while the router may have aleardy reached convergence.
-# initial_broadcast contains a broadcast that we are meant to send out on the first update. This is
-# used for when we are meant to initially broadcast a link break.
-def router_simulation(sock, wait_for_broadcast = False, initial_broadcast = None):
+def router_simulation(sock):
     print('Press `Ctrl + C` to exit\nListening...')
-    
-    # Initialize broadcast_msgs to contain the initial_broadcast, only if it is present
-    if initial_broadcast is not None:
-        print(f'Initially broadcast {initial_broadcast}')
-        # The broadcast must be populated with all the edges that this node contains, so that we
-        # can check them off for acknowledgement
-        broadcast_msgs = {initial_broadcast: [edge for edge in edges]}
-    else:
-        broadcast_msgs = {}
-    
-    # Keep track of broadcasts we have already sent and recieved acknowledgement for so that we do
-    # not send them out again
-    old_broadcasts = []
     
     # Keep track of the total number of updates to the table
     update_count = 0
     
     # Continue to run while we have not converged, or while we are waiting for a broadcast
-    while wait_for_broadcast or not convergence(table):
+    while not convergence(table):
         try:
             # Try to receive a message
             msg_type, id, data = recieve_message(sock)
             
-            # First check if we have recieved an acknowledgement from one of our peers
-            if msg_type == 'ack':
-                # Check that we are still waiting for an acknowledgement from this peer for
-                # this specific broadcast
-                if data in broadcast_msgs and id in broadcast_msgs[data]:
-                    # Remove them from the pending acknowledgements
-                    broadcast_msgs[data].remove(id)
-                    print(f'Ack from {id}')
-                    
-                    # If we require no more acknowledgements, move this broadcast to old_broadcasts
-                    if not broadcast_msgs[data]:
-                        print(f'{data} successfully fully broadcasted')
-                        del broadcast_msgs[data]
-                        old_broadcasts.append(data)
-            # Otherwise, check if we have recieved a notice that a link was broken.
-            elif msg_type == 'link_broken':
-                # First check if we are aware of this and still waiting for acknowledgement
-                if data in broadcast_msgs:
-                    # We are aware already, so acknowledge
-                    send_message(sock, id, 'ack', data)
-                # Otherwise, check that we haven't already seed this at all
-                elif data not in old_broadcasts:
-                    # Recieved new broadcast
-                    wait_for_broadcast = False
-                    print(f'New broadcast from {id}')
-                    
-                    # Add this broadcast to the list of broadcasts
-                    broadcast_msgs[data] = [edge for edge in edges]
-                    broadcast_msgs[data].remove(id)
-                    send_message(sock, id, 'ack', data)
-                    if not broadcast_msgs[data]:
-                        print(f'{data} successfully fully broadcasted')
-                        del broadcast_msgs[data]
-                        old_broadcasts.append(data)
-                        
-                    
-                    print(f'A link was broken from {data[0]} to {data[1]}, reset table')
-                    
-                    # Check if we aren't the node that has a broken link
-                    if ID != data[0] and ID != data[1]:
-                        load_config(ID)
-                else:
-                    # Already seen this broadcast, send acknowledgement
-                    print(f'Reack to {id}')
-                    send_message(sock, id, 'ack', data)
-                
             # If we've recieved an update to the table, handle it
-            elif not broadcast_msgs and msg_type == 'update':
+            if msg_type == 'update':
                 # Try to update the table with new values
                 updated = update_table(id, data)
                 
@@ -250,106 +185,128 @@ def router_simulation(sock, wait_for_broadcast = False, initial_broadcast = None
                     update_count += 1
                     update_neighbors(sock)
             # If we still have broadcasts waiting on acknowledgements, timeout and resend them
-            elif broadcast_msgs:
-                # Rebroadcast
-                raise TimeoutError
             sleep(TIMEOUT)
         except TimeoutError:
-            # If we still have messages to broadcast, broadcast one at the head of the list
-            # to each neighbor that we are missing an acknowledgement from
-            if broadcast_msgs:
-                msg = list(broadcast_msgs.items())[0][0]
-                for neighbor in broadcast_msgs[msg]:
-                    print(f'Rebroadcast {msg} to {neighbor}: {("link_broken", ID, msg)}')
-                    send_message(sock, neighbor, 'link_broken', msg)
-            else:
-                # Periodically update our neigbors
-                update_neighbors(sock)
+            # Periodically update our neigbors
+            update_neighbors(sock)
     return update_count
 
+def recv_broadcast(sock, broadcast_type):
+    while True:
+        try:
+            msg_type, id, data = recieve_message(sock)
+            # Keep waiting until we find a broadcast message that is the correct type
+            # of broadcast
+            if msg_type != 'broadcast' or data[0] != broadcast_type:
+                continue
+            
+            # Return it and its sender
+            return data, id
+        except TimeoutError:
+            pass
+    pass
+
+def broadcast(sock, sender, broadcast_msg):
+    # Keep track of which neighbors we are waiting for acknowledgement from
+    pending_acks = [edge for edge in edges]
+    
+    # Send the broadcast to each neighbor
+    for neighbor in pending_acks:
+        send_message(sock, neighbor, 'broadcast', broadcast_msg)
+    
+    if sender != None:
+        # We do not need acknowledgement from the one who sent us the broadcast
+        pending_acks.remove(sender)
+    
+    # Keep going as long as we still need acknowledgement from neighbors
+    while pending_acks:
+        try:
+            print(f'Waiting on {pending_acks}')
+            msg_type, id, msg = recieve_message(sock)
+            
+            # Check that we have recieved a broadcast and it is the same as ours
+            if msg_type == 'broadcast' and msg == broadcast_msg:
+                # If we were waiting for acknowledgement from this neighbor, mark them as acknowledged
+                if id in pending_acks:
+                    pending_acks.remove(id)
+                # Otherwise, send them back the broadcast as acknowledgement
+                else:
+                    send_message(sock, id, 'broadcast', broadcast_msg)
+        except TimeoutError:
+            # Periodically send out the broadcast, as long as we are still waiting for
+            # acknowledgement
+            for neighbor in pending_acks:
+                send_message(sock, neighbor, 'broadcast', broadcast_msg)
+
 def test1(sock, update_count):
+    print('\n-------------------------\nTest 1:')
+    sock.settimeout(TIMEOUT)
+    
     # Broadcast from router A
     if ID == 'A':
-        sock.settimeout(TIMEOUT)
-        print('\n-------------------------\nTest 1:')
-        msg = [ f'{ID}, {IP}, {PORT}', ('1001783662', 'Sameer ID'), datetime.datetime.now(), update_count, 1000 ]
+        # Create the broadcast message
+        msg = [ 'message', f'{ID}, {IP}, {PORT}', ('1001783662', 'Sameer ID'), datetime.datetime.now(), update_count, 1000 ]
         msg[4] = sys.getsizeof(msg)
-        pending_acks = [edge for edge in edges]
-        for neighbor in pending_acks:
-            send_message(sock, neighbor, 'broadcast', msg)
-        while pending_acks:
-            try:
-                msg_type, id, msg2 = recieve_message(sock)
-                if msg_type == 'broadcast' and msg2 == msg:
-                    if id in pending_acks:
-                        pending_acks.remove(id)
-                    else:
-                        send_message(sock, id, 'broadcast', msg)
-            except TimeoutError:
-                for neighbor in pending_acks:
-                    send_message(sock, neighbor, 'broadcast', msg)
+        print(f'Sending broadcast:')
+        print(f'Broadcast info: {msg[1]}')
+        print(f'IDs: {msg[2]}')
+        print(f'UTC Time: {msg[3]}')
+        print(f'Updates: {msg[4]}')
+        print(f'Bytes: {msg[5]}\n')
+        
+        # Broadcast the message to our neighbors
+        broadcast(sock, None, msg)
     else:
-        print('\n-------------------------\nTest 1:')
-        sock.settimeout(TIMEOUT)
-        pending_acks = [edge for edge in edges]
-        recv_from = ''
+        # Recieve a broadcast
+        msg, recv_from = recv_broadcast(sock, 'message')
+        _, info, ids, utc, updates, num_bytes = msg
         
-        msg = None
-        while True:
-            try:
-                msg_type, id, data = recieve_message(sock)
-                recv_from = id
-                if msg_type != 'broadcast':
-                    continue
-                print(f'Recieved broadcast from {id}')
-                print(f'Broadcast info: {data[0]}')
-                print(f'IDs: {data[1]}')
-                print(f'UTC Time: {data[2]}')
-                print(f'Updates: {data[3]}')
-                print(f'Bytes: {data[4]}')
-                msg = data
-                
-                break
-            except TimeoutError:
-                pass
+        print(f'Recieved broadcast from {recv_from}')
+        print(f'Broadcast info: {info}')
+        print(f'IDs: {ids}')
+        print(f'UTC Time: {utc}')
+        print(f'Updates: {updates}')
+        print(f'Bytes: {num_bytes}\n')
         
-        for neighbor in pending_acks:
-            send_message(sock, neighbor, 'broadcast', msg)
-        pending_acks.remove(recv_from)
-        while pending_acks:
-            try:
-                print(f'Waiting on {pending_acks}')
-                msg_type, id, msg2 = recieve_message(sock)
-                if msg_type == 'broadcast' and msg2 == msg:
-                    if id in pending_acks:
-                        pending_acks.remove(id)
-                    else:
-                        send_message(sock, id, 'broadcast', msg)
-            except TimeoutError:
-                for neighbor in pending_acks:
-                    send_message(sock, neighbor, 'broadcast', msg)
-    print('\ndone\n')
+        # Send that broadcast to our neighbors, except the sender
+        broadcast(sock, recv_from, msg)
+    print('\nSuccessfully broadcast message\n')
     sleep(4)
+
+# Simulate a link being broken between nodes u and v
+def break_link(u, v):
+    # Reload the config
+    load_config(ID)
+    # Remove the edge they share
+    del edges[v]
+    # Set the cost from one to the other as INFINITY
+    table[u][v] = INFINITY
+    # Put in ascending order so that break_link(u, v) == break_link(v, u)
+    if u > v:
+        u, v = v, u
+    return ('link_broken', u, v)
 
 def test2(sock):
     print('\n-------------------------\nTest 2:')
     
-    print_table(table)
-    
     sock.settimeout(TIMEOUT)
     if ID == 'A':
-        load_config(ID)
-        del edges['B']
-        table['A']['B'] = INFINITY
-        router_simulation(sock, False, ('A', 'B'))
+        broadcast(sock, None, break_link('A', 'B'))
     elif ID == 'B':
-        load_config(ID)
-        del edges['A']
-        table['B']['A'] = INFINITY
-        router_simulation(sock, False, ('B', 'A'))
+        broadcast(sock, None, break_link('B', 'A'))
     else:
-        router_simulation(sock, True)
+        broken_link_msg, recv_from = recv_broadcast(sock, 'link_broken')
+        
+        print(f'Recieved notice of broken link: {broken_link_msg}')
+        load_config(ID)
+        
+        broadcast(sock, recv_from, broken_link_msg)
     
+    sleep(4)
+    print()
+    router_simulation(sock)
+    
+    print('\nReached convergence:')
     print_table(table)
 
 def main():
@@ -382,9 +339,9 @@ def main():
     
     update_count = 0
     try:
-        # update_count = 0
         print_table(table)
         update_count = router_simulation(sock)
+        print('\nReached convergence:')
         print_table(table)
         
         test1(sock, update_count)
@@ -393,7 +350,6 @@ def main():
     except KeyboardInterrupt:
         pass
     
-    # print('\nUpdates:', update_count)
     sock.close()
 
 if __name__ == "__main__":
