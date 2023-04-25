@@ -3,14 +3,30 @@ from threading import Thread
 from time import sleep
 import datetime
 
+# The IP address that all routers will be using (localhost)
 IP = '127.0.0.1'
+
+# The port from which we start counting. This should be the port of the first
+# router, which is usually 'A'
 BASE_PORT = 0
+
+# A value to represent an infinite cost to get from one node to another
 INFINITY = 999
+
+# The name of our config file
 CONFIG_FILE = 'topology.config'
+
+# The default timeout before we give up on recieving a message, and also
+# how long we wait until listening for another message. Measured in seconds
 TIMEOUT = .05
 
+# All valid nodes
 NODES = 'ABCDEF'
+
+# The table containing the cost from each node to each other node
 table = {}
+
+# The list of nodes which share an edge with this node
 edges = {}
 
 # Encode a message using pickle
@@ -63,8 +79,11 @@ def load_config(id):
     
     # Open the config file
     with open(CONFIG_FILE) as config:
+        print('Loading config file topology.config:')
+        file = config.read()
+        print(file)
         # Split the file into individual lines to be parsed
-        lines = config.read().splitlines()
+        lines = file.splitlines()
         
         for i, line in enumerate(lines):
             # Check if line is correctly formatted, while also getting the node this line is defining,
@@ -97,6 +116,7 @@ def print_table(table):
     for key, value in table.items():
         print(f'{key} {value}')
 
+# Bellman ford algorithm for minimizing cost
 # Source: https://en.wikipedia.org/wiki/Bellman%E2%80%93Ford_algorithm
 def bellman_ford(table, source):
     vertices = NODES
@@ -127,19 +147,14 @@ def bellman_ford(table, source):
 def update_table(sender, new_table):
     # Go through each cost and replace it with the updated table's cost if it is lower
     updated = False
-    for node, edges in new_table.items():
-        for edge, cost in edges.items():
-            if cost < table[node][edge]:
-                print(f'Updated: Source={sender}, Current={cost}, Previous={table[node][edge]}')
-                updated = True
-                table[node][edge] = cost
 
-    # Perform the bellman ford algorithm to replace costs with the cost to reach by traversing one node ahead, but only if it is a lower cost
+    # Perform the bellman ford algorithm to replace costs with the cost to reach by traversing one node ahead,
+    # but only if it is a lower cost
     distance = bellman_ford(table, get_index(ID))
     for i, cost in enumerate(distance):
         v = NODES[i]
         if cost < table[ID][v]:
-            print(f'Updated: Source={sender}, Current={cost}, Previous={table[ID][v]}')
+            print(f'Updated: Source={sender}, Current={v}:{cost}, Previous={v}:{table[ID][v]}')
             table[ID][v] = cost
             updated = True
     
@@ -191,6 +206,7 @@ def router_simulation(sock):
             update_neighbors(sock)
     return update_count
 
+# Recieve a broadcast that matches broadcast_type
 def recv_broadcast(sock, broadcast_type):
     while True:
         try:
@@ -206,6 +222,8 @@ def recv_broadcast(sock, broadcast_type):
             pass
     pass
 
+# Send a broadcast to broadcast_msg. `sender` is the node we have recieved the broadcast
+# from. It can be None, which means we are the original source of the broadcast.
 def broadcast(sock, sender, broadcast_msg):
     # Keep track of which neighbors we are waiting for acknowledgement from
     pending_acks = [edge for edge in edges]
@@ -214,8 +232,10 @@ def broadcast(sock, sender, broadcast_msg):
     for neighbor in pending_acks:
         send_message(sock, neighbor, 'broadcast', broadcast_msg)
     
+    # Check if we originally recieved the broadcast from another node. In this case,
+    # we would not need acknowledgement from them, because we know they have seen
+    # the broadcast.
     if sender != None:
-        # We do not need acknowledgement from the one who sent us the broadcast
         pending_acks.remove(sender)
     
     # Keep going as long as we still need acknowledgement from neighbors
@@ -290,11 +310,15 @@ def test2(sock):
     print('\n-------------------------\nTest 2:')
     
     sock.settimeout(TIMEOUT)
+    
+    # For nodes A and B, broadcast that a link has been broken between the two
     if ID == 'A':
         broadcast(sock, None, break_link('A', 'B'))
     elif ID == 'B':
         broadcast(sock, None, break_link('B', 'A'))
     else:
+        # For all other nodes, recieve the broadcast that a link was broken, and
+        # clear the table. Rebroadcast to our neighbors.
         broken_link_msg, recv_from = recv_broadcast(sock, 'link_broken')
         
         print(f'Recieved notice of broken link: {broken_link_msg}')
@@ -304,6 +328,8 @@ def test2(sock):
     
     sleep(4)
     print()
+    
+    # Afterwards, work back towards convergence now that the table has changed
     router_simulation(sock)
     
     print('\nReached convergence:')
