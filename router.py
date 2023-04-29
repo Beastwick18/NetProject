@@ -18,7 +18,7 @@ CONFIG_FILE = 'topology.config'
 
 # The default timeout before we give up on recieving a message, and also
 # how long we wait until listening for another message. Measured in seconds
-TIMEOUT = .05
+TIMEOUT = .5
 
 # All valid nodes
 NODES = 'ABCDEF'
@@ -145,8 +145,15 @@ def bellman_ford(table, source):
 
 # Given some data sent from an `sender`, update the table with new values present in `new_table`
 def update_table(sender, new_table):
-    # Go through each cost and replace it with the updated table's cost if it is lower
     updated = False
+
+    # Go through each cost and replace it with the updated table's cost if it is lower
+    for node, edges in new_table.items():
+        for edge, cost in edges.items():
+            if cost < table[node][edge]:
+                print(f'Updated: Source={sender}, Current={edge}:{cost}, Previous={edge}:{table[node][edge]}')
+                updated = True
+                table[node][edge] = cost
 
     # Perform the bellman ford algorithm to replace costs with the cost to reach by traversing one node ahead,
     # but only if it is a lower cost
@@ -265,7 +272,7 @@ def test1(sock, update_count):
     # Broadcast from router A
     if ID == 'A':
         # Create the broadcast message
-        msg = [ 'message', f'{ID}, {IP}, {PORT}', ('1001783662', 'Sameer ID'), datetime.datetime.now(), update_count, 1000 ]
+        msg = [ 'message', f'{ID}, {IP}, {PORT}', ('1001783662', '1002015854'), datetime.datetime.now(), update_count, 1000 ]
         msg[5] = sys.getsizeof(msg)
         print(f'Sending broadcast:')
         print(f'Broadcast info: {msg[1]}')
