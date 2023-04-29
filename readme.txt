@@ -1,3 +1,5 @@
+By Steven Culwell, Sameer Dayani
+
 To run this program, you must have python3 installed on your system.
 The command to run the program for one router instance is:
     python3 router.py <PORT> <ROUTER ID>
